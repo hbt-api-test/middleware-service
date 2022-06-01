@@ -1,0 +1,89 @@
+#Autor: Jonatan Javier Velandia
+#Heinsohn Business Technology
+image: compile-jdk11-mvn:1.0.0
+
+#Stages
+stages: 
+ - compile
+ - testing
+ - docker
+ - selenium
+ - publish
+ - deploy
+ - sonar
+
+#Variables 
+variables:
+ DIR_REPO: /home/admin-pensiones/.m2/repository/com/heinsohn/obligatorias
+ GENERATE_LOG: "false"
+
+#Compilación MiddlewareServices
+compileMiddlewareServices:
+ stage: compile
+ artifacts:
+  paths:
+  - ${CI_PROJECT_DIR}/target
+  expire_in: 24 hour
+ script:
+  - mvn clean install -Dquarkus.datasource.jdbc.driver=${DBDriver} -Dquarkus.datasource.username=${DBUser} -Dquarkus.datasource.password=${DBPass} -Dquarkus.datasource.jdbc.url=${DBUrl} -Dquarkus.datasource.db-kind=${DBKind} -Dquarkus.hibernate-orm.dialect=${DBDialect}
+ rules:
+  - if: '$CI_COMMIT_BRANCH == "develop"'
+ retry: 
+  max: 2
+  when:
+   - runner_system_failure
+ tags:
+  - middleware-services
+
+#Creación Contenedor  MiddlewareServices
+dockerMiddlewareServices:
+  stage: docker
+  script:
+    - docker build -f src/main/docker/Dockerfile.jvm -t quarkus/middleware-services-rest:1.0.0 . --no-cache
+    - docker container prune -f
+  rules:
+   - if: '$CI_COMMIT_BRANCH == "develop"'
+  retry: 
+   max: 2
+   when:
+    - runner_system_failure     
+  tags:
+   - shell-middleware
+  dependencies:
+    - compileMiddlewareServices
+
+#Publish Contenedor  MiddlewareServices
+publishMiddlewareServices:
+  stage: publish
+  allow_failure: false
+  script:
+    - docker tag quarkus/middleware-services-rest:1.0.0 pensiones-ci.heinsohn.com.co:5000/quarkus/middleware-services-rest:1.0.0
+    - docker push pensiones-ci.heinsohn.com.co:5000/quarkus/middleware-services-rest:1.0.0
+    - docker container prune -f
+  rules:
+   - if: '$CI_COMMIT_BRANCH == "develop"'
+  retry: 
+   max: 2
+   when:
+    - runner_system_failure     
+  tags:
+   - shell-middleware
+  dependencies:
+    - dockerMiddlewareServices
+   
+#Despliegue del contenedor MiddlewareServices
+deployMiddlewareServices:
+  stage: deploy
+  allow_failure: false
+  script:
+    - docker stop gestora-middleware || true && docker rm gestora-middleware || true
+    - docker run -i -d -p 5560:443 -p 5561:8080 -e TZ=America/Bogota --name gestora-middleware pensiones-ci.heinsohn.com.co:5000/quarkus/middleware-services-rest:1.0.0
+    - docker container prune -f
+    - docker image prune --filter label=stage=gestora-middleware -a -f
+  retry: 2  
+  rules:
+   - if: '$CI_COMMIT_BRANCH == "develop"'
+  tags:
+   - shell-middleware
+  dependencies:
+    - dockerMiddlewareServices
